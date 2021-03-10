@@ -170,23 +170,23 @@ enum Particle_Force_Header
 
 struct Particle_Test
 {
-    //NOTE: Always have to be first
+    //Must be first
     const Particle_Force_Header header = TEST;
     
-    const char* text = "esto es un string para probar mi force system!\n";
+    const char* text = "testing Particle_Force_Header cast!\n";
 };
 
 struct Particle_Gravity
 {
-    //NOTE: Always have to be first
-    const Particle_Force_Header header = GRAVITY;
+    //Must be first
+    const Particle_Force_Header header = GRAVITY; 
     
     V2 gravity;
 };
 
 struct Particle_Drag
 {
-    //NOTE: Always have to be first
+    //Must be first
     const Particle_Force_Header header = DRAG;
     
     float k1;
@@ -216,6 +216,7 @@ void update_particle_force_generator(void* force, Particle* particle)
             force = v2_normailize(force);
             force *= -drag_coeff;
             particle->force_accum += force;
+            printf("drag_coeff: %f\n", drag_coeff);
         }break;
         case TEST:
         {
@@ -229,7 +230,7 @@ void update_particle_force_generator(void* force, Particle* particle)
 //Holds all the force generators and the particles they apply to.
 struct Particle_Force_Registry
 {
-    //IMPORTANT! not acess implementation only
+    //IMPORTANT! not access implementation only
 
     //Keeps track of one force generator and the particle it applies to
     struct Particle_Force_Registration
@@ -294,6 +295,7 @@ struct Sim_State
 {
     Particle_Force_Registry registry;
     Particle_Gravity gravity;
+    Particle_Drag drag;
     Particle_Test test;
     Particle test_particle;
 };
@@ -301,10 +303,13 @@ struct Sim_State
 void init_physics_sim(Sim_State* sim_state)
 {
     sim_state->registry.add(&sim_state->test_particle, &sim_state->gravity);
-    sim_state->registry.add(&sim_state->test_particle, &sim_state->test);
+    sim_state->registry.add(&sim_state->test_particle, &sim_state->drag);
     sim_state->registry.add(&sim_state->test_particle, &sim_state->test);
 
     sim_state->gravity.gravity= V2(5, 2);
+    sim_state->drag.k1 = 1.0f;
+    sim_state->drag.k2 = 0.2;
+    sim_state->test_particle.velocity = V2(10, 5);
     sim_state->test_particle.inverse_mass = 0.5;
 }
 
