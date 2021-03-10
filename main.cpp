@@ -155,80 +155,116 @@ void integrate_particle_position(Particle* particle, float dt)
     //Update Linear velocity from acceleration
     particle->velocity += (resulting_acc * dt);
     particle->velocity *= powf(particle->damping, dt);
+
+    particle->force_accum = {};
 }
 
-//Fireworks
-struct Firework : public Particle
+#if 1
+//Particle Forece Generator (NO OOP)
+enum Particle_Force_Header
 {
-    //Integer type used for firework rules
-    uint32_t type;
-    //Age of a firework determines when it denotates
-    float age;
+    GRAVITY = 0,
+    DRAG = 1,
+    TEST = 2,
 };
 
-bool firework_update(Firework* firework, float dt)
+struct Particle_Test
 {
-    //Update the physical state
-    integrate_particle_position(firework, dt);
-    //Work backward from the age to zero
-    firework->age -= dt;
-    return (firework->age < 0);
+    //NOTE: Always have to be first
+    const Particle_Force_Header header = TEST;
+    
+    const char* text = "esto es un string para probar mi force system!\n";
+};
+
+struct Particle_Gravity
+{
+    //NOTE: Always have to be first
+    const Particle_Force_Header header = GRAVITY;
+    
+    V2 gravity;
+};
+
+struct Particle_Drag
+{
+    //NOTE: Always have to be first
+    const Particle_Force_Header header = DRAG;
+    
+    float k1;
+    float k2;
+};
+
+void update_particle_force_generator(void* force, Particle* particle)
+{
+    Particle_Force_Header header = *(Particle_Force_Header*)force;
+    switch(header)
+    {
+        case GRAVITY:
+        {
+            Particle_Gravity* gravity_force = (Particle_Gravity*)force; 
+            if(!particle->inverse_mass) return;
+            particle->force_accum += gravity_force->gravity * (1/particle->inverse_mass);
+            printf("gravity force:(%f, %f)\n", gravity_force->gravity.x, gravity_force->gravity.y);
+        }break;
+        case DRAG:
+        {
+            Particle_Drag* drag_force = (Particle_Drag*)force; 
+            V2 force = particle->velocity;
+            //Calculate the total drag velocity
+            float drag_coeff = v2_length(force);
+            drag_coeff = drag_force->k1 * drag_coeff + drag_force->k2 * drag_coeff * drag_coeff;
+            //Calculate the final force and apply it
+            force = v2_normailize(force);
+            force *= -drag_coeff;
+            particle->force_accum += force;
+        }break;
+        case TEST:
+        {
+            Particle_Test* test_force = (Particle_Test*)force; 
+            printf("%s", test_force->text);
+        }break;
+    }
 }
 
-struct Firework_Rule
+#define MAX_FORCE_REGISTRATIONS 1024
+//Holds all the force generators and the particles they apply to.
+struct Particle_Force_Registry
 {
-    //The type of firework that is manage by this rule
-    uint32_t type;
-    //The minimun length of the fuse
-    float min_age;
-    //The maximun length of the fuse
-    float max_age;
-    //The minimun relative velocity of this firework
-    V2 min_velocity;
-    //The maximun relative velocity of this firework
-    V2 max_velocity;
-    //The damping of this firework type
-    float damping;
+    //IMPORTANT! not acess implementation only
 
-    //The payload is the new firework to create when this firework fuse is over
-    struct Payload
+    //Keeps track of one force generator and the particle it applies to
+    struct Particle_Force_Registration
     {
-        //The type of the new particle to create
-        uint32_t type;
-        //The number of particles in this payload
-        uint32_t count;
+        Particle* particle;
+        void* fg;
     };
 
-    //Number of payloads for this firework type
-    uint32_t payload_count;
-    //The set of payloads
-    Payload* payloads;
+    //List of registration
+    Particle_Force_Registration registrations[MAX_FORCE_REGISTRATIONS];
+    uint32_t registration_index = 0;
+
+    //-----------------------------------------
+    
+    //Register the given force generator
+    void add(Particle* particle, void* fg)
+    {
+        assert(registration_index < MAX_FORCE_REGISTRATIONS);
+        registrations[registration_index] = {particle, fg};
+        registration_index++;
+    }
+    //Calls all the force generetors to update the forces of their corresponding particle
+    void update_forces(float dt)
+    {
+        (void)dt;
+        uint32_t total_registration = registration_index;
+        for(uint32_t i = 0; i < total_registration; ++i)
+        {
+            update_particle_force_generator(registrations[i].fg, registrations[i].particle);
+        }
+    }
 };
-
-void firework_rule_create(Firework_Rule rule, Firework* firework, Firework* parent = 0)
-{
-    firework->type = rule.type;
-    firework->age = rand_float(rule.min_age, rule.max_age);
-    if(parent) firework->position = parent->position;
-    //The velocity is the particle velocity
-    V2 vel = {};
-    if(parent) vel = parent->velocity;
-    vel += rand_v2(rule.min_velocity, rule.max_velocity);
-    firework->velocity = vel;
-
-    //We use mass of 1 in all cases
-    firework->inverse_mass = 1;
-    firework->damping = rule.damping;
-    firework->acceleration = v2_gravity();
-
-    firework->force_accum = {};
-}
-
-void firework_rule_paiload_create(Firework_Rule* rule, uint32_t number)
-{
-    rule->payloads = (Firework_Rule::Payload*)malloc(number*sizeof(Firework_Rule::Payload));
-    rule->payload_count = number;
-}
+#else
+#include "force_gen.cpp"
+#endif
 
 #define WINDOW_TITLE "2dphy"
 #define WINDOW_WIDTH 800
@@ -239,9 +275,6 @@ void firework_rule_paiload_create(Firework_Rule* rule, uint32_t number)
     (color >> 8  & 0xFF), \
     (color >> 0  & 0xFF), \
     (color >> 24 & 0xFF)  \
-
-#define NUM_FIREWORKS_RULES 4
-#define NUM_FIREWORKS 1024
 
 inline
 float float_inverse(float num)
@@ -259,195 +292,34 @@ V2 world_to_screen(V2 pos)
 
 struct Sim_State
 {
-    Firework_Rule rules[NUM_FIREWORKS_RULES];
-    Firework fireworks[NUM_FIREWORKS];
-    uint32_t next_firework = 0;
+    Particle_Force_Registry registry;
+    Particle_Gravity gravity;
+    Particle_Test test;
+    Particle test_particle;
 };
-
-void create_firework(Sim_State* sim_state, uint32_t type, Firework* parent)
-{
-    //Get the rule needed to create this firework
-    Firework_Rule* rule = sim_state->rules + (type - 1);
-    Firework* firework = sim_state->fireworks + sim_state->next_firework;
-    //Create the firework
-    firework_rule_create(*rule, firework, parent);
-    sim_state->next_firework = (sim_state->next_firework + 1) % NUM_FIREWORKS;
-}
-
-void create_firework(Sim_State* sim_state, uint32_t type, uint32_t number, Firework* parent)
-{
-    for(uint32_t i = 0; i < number; ++i)
-    {
-        create_firework(sim_state, type, parent);
-    }
-}
 
 void init_physics_sim(Sim_State* sim_state)
 {
-    //Init fireworks
-    for(uint32_t firework_index = 0; firework_index < NUM_FIREWORKS; ++firework_index)
-    {
-        Firework* firework = sim_state->fireworks + firework_index;
-        firework->type = 0;
+    sim_state->registry.add(&sim_state->test_particle, &sim_state->gravity);
+    sim_state->registry.add(&sim_state->test_particle, &sim_state->test);
+    sim_state->registry.add(&sim_state->test_particle, &sim_state->test);
 
-    }
-    
-#if 0 
-    //Init fireworks rules
-    Firework_Rule* rule0 = &sim_state->rules[0];
-    rule0->type = 1;
-    rule0->min_age = 0.5;
-    rule0->max_age = 1.4f;
-    rule0->min_velocity = V2(-5, 25);
-    rule0->max_velocity = V2(5, 28);
-    rule0->damping = 0.1f;
-    firework_rule_paiload_create(rule0, 1);
-    rule0->payloads[0] = {3, 15}; //Type and count
-
-    Firework_Rule* rule1 = &sim_state->rules[1];
-    rule1->type = 2;
-    rule1->min_age = 0.5f;
-    rule1->max_age = 1.0f;
-    rule1->min_velocity = V2(-5, -10);
-    rule1->max_velocity = V2(5, 10);
-    rule1->damping = 0.8f;
-
-    Firework_Rule* rule2 = &sim_state->rules[2];
-    rule2->type = 3;
-    rule2->min_age = 0.5f;
-    rule2->max_age = 1.5f;
-    rule2->min_velocity = V2(-5, -5);
-    rule2->max_velocity = V2(5, 5);
-    rule2->damping = 0.1f;
-    firework_rule_paiload_create(rule2, 2);
-    rule2->payloads[0] = {2, 5};
-    rule2->payloads[1] = {4, 10};
-
-    Firework_Rule* rule3 = &sim_state->rules[3];
-    rule3->type = 4;
-    rule3->min_age = 0.25f;
-    rule3->max_age = 0.5f;
-    rule3->min_velocity = V2(-10, 5);
-    rule3->max_velocity = V2(10, 5);
-    rule3->damping = 0.2f;
-#else
-    //Init fireworks rules
-    Firework_Rule* rule0 = &sim_state->rules[0];
-    rule0->type = 1;
-    rule0->min_age = 0.5;
-    rule0->max_age = 1.4f;
-    rule0->min_velocity = V2(-5, 20);
-    rule0->max_velocity = V2(5, 25);
-    rule0->damping = 0.1f;
-    firework_rule_paiload_create(rule0, 2);
-    rule0->payloads[0] = {2, 15}; //Type and count
-    rule0->payloads[1] = {4, 15}; //Type and count
-
-    Firework_Rule* rule1 = &sim_state->rules[1];
-    rule1->type = 2;
-    rule1->min_age = 0.5f;
-    rule1->max_age = 1.0f;
-    rule1->min_velocity = V2(-7, -7);
-    rule1->max_velocity = V2(7, 7);
-    rule1->damping = 0.8f;
-    firework_rule_paiload_create(rule1, 1);
-    rule1->payloads[0] = {3, 5}; //Type and count
-
-    Firework_Rule* rule2 = &sim_state->rules[2];
-    rule2->type = 3;
-    rule2->min_age = 0.5f;
-    rule2->max_age = 1.5f;
-    rule2->min_velocity = V2(-5, -5);
-    rule2->max_velocity = V2(5, 5);
-    rule2->damping = 0.1f;
-
-    Firework_Rule* rule3 = &sim_state->rules[3];
-    rule3->type = 4;
-    rule3->min_age = 0.25f;
-    rule3->max_age = 0.5f;
-    rule3->min_velocity = V2(-11, -11);
-    rule3->max_velocity = V2(11, 11);
-    rule3->damping = 0.2f;
-    firework_rule_paiload_create(rule3, 1);
-    rule3->payloads[0] = {3, 5}; //Type and count
-
-#endif
+    sim_state->gravity.gravity= V2(5, 2);
+    sim_state->test_particle.inverse_mass = 0.5;
 }
 
 void update_physics_sim(float dt, Sim_State* sim_state)
 {
-    static float create_firework_timer = 0.0f;
-    if(create_firework_timer > 2)
-    {
-        create_firework(sim_state, 1, 0);
-        create_firework_timer = 0.0f;
-    }
-    create_firework_timer += dt;
-
-    for(uint32_t firework_index = 0; firework_index < NUM_FIREWORKS; ++firework_index)
-    {
-        Firework* firework = sim_state->fireworks + firework_index;
-        if(firework->type > 0)
-        {
-            //Does it need removing
-            if(firework_update(firework, dt))
-            {
-                //Find the appropiate rule
-                Firework_Rule* rule = sim_state->rules + (firework->type-1);
-                firework->type = 0;
-
-                //Add the payload
-                for(uint32_t i = 0; i < rule->payload_count; ++i)
-                {
-                    Firework_Rule::Payload* payload = rule->payloads + i;
-                    create_firework(sim_state, payload->type, payload->count, firework);
-                }
-            }
-        }
-        else
-        {
-            *firework = {};
-        }
-    }
+    (void)dt;
+    (void)sim_state;
+    sim_state->registry.update_forces(dt);
+    printf("-----------------------------\n\n");
 }
 
 void render_physics_sim(SDL_Renderer* renderer, Sim_State* sim_state)
 {
-    for(uint32_t firework_index = 0; firework_index < NUM_FIREWORKS; ++firework_index)
-    {
-        Firework* firework = sim_state->fireworks + firework_index;
-        if(firework->type > 0)
-        {
-            switch(firework->type)
-            {
-
-                case 1:
-                {
-                    SDL_SetRenderDrawColor(renderer, HEX_TO_SDL(0xFFFF0000));
-                }break;
-                case 2:
-                {
-                    SDL_SetRenderDrawColor(renderer, HEX_TO_SDL(0xFF00FF00));
-                }break;
-                case 3:
-                {
-                    SDL_SetRenderDrawColor(renderer, HEX_TO_SDL(0xFFFF00FF));
-                }break;
-                case 4:
-                {
-                    SDL_SetRenderDrawColor(renderer, HEX_TO_SDL(0xFFFFFF00));
-                }break;
-            }
-            SDL_Rect firework_rect;
-            V2 screen_position = world_to_screen(firework->position);
-            firework_rect.x = screen_position.x;
-            firework_rect.y = screen_position.y;
-            firework_rect.w = 5;
-            firework_rect.h = 5;
-            SDL_RenderFillRect(renderer, &firework_rect);
-        }
-
-    }
+    (void)sim_state;
+    (void)renderer;
 }
 
 int main(int argc, char** argv)
