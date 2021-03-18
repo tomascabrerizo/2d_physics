@@ -1,9 +1,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <math.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <time.h>
-#include <SDL2/SDL.h>
+#include <SDL.h>
 
 int rand_int(int min, int max)
 {
@@ -166,6 +167,10 @@ enum Particle_Force_Header
     GRAVITY = 0,
     DRAG = 1,
     TEST = 2,
+    SPRING = 3,
+    ANCHORED_SPRING = 4,
+    BUNGEE = 5,
+    BUOYANCY = 6,
 };
 
 struct Particle_Test
@@ -193,21 +198,68 @@ struct Particle_Drag
     float k2;
 };
 
-void update_particle_force_generator(void* force, Particle* particle)
+struct Particle_Spring
 {
-    Particle_Force_Header header = *(Particle_Force_Header*)force;
+    //Must be first
+    const Particle_Force_Header header = SPRING;
+   
+    //The particle at the other end of the spring
+    Particle* other; 
+    float spring_constant;
+    float rest_length; 
+};
+
+struct Particle_Anchored_Spring
+{
+    const Particle_Force_Header header = ANCHORED_SPRING;
+
+    //The location of the anchored end of the spring
+    V2* anchor;
+    float spring_constant;
+    float rest_length;
+};
+
+struct Particle_Bungee
+{
+    const Particle_Force_Header header = BUNGEE;
+   
+    //The particle at the other end of the spring
+   Particle* other;
+   float spring_constant;
+   float rest_length;
+     
+};
+
+struct Particle_Buoyancy
+{
+    //Force generator that applies a buoyancy force for a liquit paralel to x axies
+    const Particle_Force_Header header = BUOYANCY;
+
+    //Maximum submersion depth of the object before it generates its maximum buoyancy force
+    float max_depth;
+    //The volume of the object
+    float volume;
+    //The height of the water above y = 0
+    float water_height;
+    //The density if the liquid. Pure water has density of 1000 kg per cubic meter
+    float liquid_density = 1000.0f; 
+};
+
+void update_particle_force_generator(void* force_pack, Particle* particle)
+{
+    Particle_Force_Header header = *(Particle_Force_Header*)force_pack;
     switch(header)
     {
         case GRAVITY:
         {
-            Particle_Gravity* gravity_force = (Particle_Gravity*)force; 
+            Particle_Gravity* gravity_force = (Particle_Gravity*)force_pack; 
             if(!particle->inverse_mass) return;
             particle->force_accum += gravity_force->gravity * (1/particle->inverse_mass);
             printf("gravity force:(%f, %f)\n", gravity_force->gravity.x, gravity_force->gravity.y);
         }break;
         case DRAG:
         {
-            Particle_Drag* drag_force = (Particle_Drag*)force; 
+            Particle_Drag* drag_force = (Particle_Drag*)force_pack; 
             V2 force = particle->velocity;
             //Calculate the total drag velocity
             float drag_coeff = v2_length(force);
@@ -220,18 +272,84 @@ void update_particle_force_generator(void* force, Particle* particle)
         }break;
         case TEST:
         {
-            Particle_Test* test_force = (Particle_Test*)force; 
+            Particle_Test* test_force = (Particle_Test*)force_pack; 
             printf("%s", test_force->text);
+        }break;
+        case SPRING:
+        {
+            Particle_Spring* spring_force = (Particle_Spring*)force_pack; 
+            //Calculate the vector of the srping
+            V2 force = particle->position;
+            force -= spring_force->other->position;
+            //Calculate the magnitude of the force
+            float magnitude = v2_length(force);
+            magnitude = fabs(magnitude - spring_force->rest_length);
+            magnitude *= spring_force->spring_constant;
+            //Calculate final force and apply it
+            force = v2_normailize(force);
+            force *= magnitude;
+            particle->force_accum += force;
+        }break;
+        case ANCHORED_SPRING:
+        {
+            Particle_Anchored_Spring* anchored_spring_force = (Particle_Anchored_Spring*)force_pack; 
+            //Calculate the vector of the srping
+            V2 force = particle->position;
+            force -= *anchored_spring_force->anchor;
+            //Calculate the magnitude of the force
+            float magnitude = v2_length(force);
+            magnitude = fabs(magnitude - anchored_spring_force->rest_length);
+            magnitude *= anchored_spring_force->spring_constant;
+            //Calculate the final force and apply it
+            force = v2_normailize(force);
+            force *= magnitude;
+            particle->force_accum += force;
+        }break;
+        case BUNGEE:
+        {
+            Particle_Bungee* bungee_force = (Particle_Bungee*)force_pack;
+            //Calculate the vector of the srping
+            V2 force = particle->position;
+            force -= bungee_force->other->position;
+            //Calculate the magnitud of the force
+            float magnitude = v2_length(force);
+            if(magnitude <= bungee_force->rest_length) return;
+            //Calculate the magnitud of the force
+            magnitude = bungee_force->spring_constant * (bungee_force->rest_length - magnitude);
+            //Calculate the final force and apply it
+            force = v2_normailize(force);
+            force *= -magnitude;
+            particle->force_accum += force;
+        
+        }break;
+        case BUOYANCY:
+        {
+            Particle_Buoyancy* buoyancy_force = (Particle_Buoyancy*)force_pack; 
+            //Calculate the sumersion depth
+            float depth = particle->position.y;
+            //Check if we are out of the water
+            if(depth >= buoyancy_force->water_height + buoyancy_force->max_depth) return;
+            V2 force = {};
+            //Chech if we are at maximum depth
+            if(depth <= buoyancy_force->water_height - buoyancy_force->max_depth)
+            {
+                force.y = buoyancy_force->liquid_density * buoyancy_force->volume;
+                particle->force_accum += force;
+                return;
+            }
+            //Otherwise we are parlty sumbmerged
+            force.y = buoyancy_force->liquid_density * buoyancy_force->volume * 
+                (depth - buoyancy_force->max_depth - buoyancy_force->water_height) / 2 * buoyancy_force->max_depth;
+            particle->force_accum += force;
         }break;
     }
 }
-
+//TODO: Maybe make a dinamic array to hold force_registrations
 #define MAX_FORCE_REGISTRATIONS 1024
 //Holds all the force generators and the particles they apply to.
 struct Particle_Force_Registry
 {
     //IMPORTANT! not access implementation only
-
     //Keeps track of one force generator and the particle it applies to
     struct Particle_Force_Registration
     {
@@ -293,24 +411,52 @@ V2 world_to_screen(V2 pos)
 
 struct Sim_State
 {
+
+    Particle test_particle;
+    Particle test_particle1;
+
+    //Force Registry
     Particle_Force_Registry registry;
+
+    //Testing forces
     Particle_Gravity gravity;
     Particle_Drag drag;
     Particle_Test test;
-    Particle test_particle;
+
+    //Spring forces
+    //Force generator creates force for only one object. If we want to link two objects
+    //with a spring, then we will need to create and register a generator for each
+    Particle_Spring spring;
+    Particle_Spring spring1;
 };
 
 void init_physics_sim(Sim_State* sim_state)
 {
-    sim_state->registry.add(&sim_state->test_particle, &sim_state->gravity);
-    sim_state->registry.add(&sim_state->test_particle, &sim_state->drag);
-    sim_state->registry.add(&sim_state->test_particle, &sim_state->test);
-
+    //Init particles
+    sim_state->test_particle.velocity = V2(10, 5);
+    sim_state->test_particle.inverse_mass = 0.5;
+    
+    //Init test forces
     sim_state->gravity.gravity= V2(5, 2);
     sim_state->drag.k1 = 1.0f;
     sim_state->drag.k2 = 0.2;
-    sim_state->test_particle.velocity = V2(10, 5);
-    sim_state->test_particle.inverse_mass = 0.5;
+    
+    //Init spring forces 
+    sim_state->spring.other = &sim_state->test_particle1;
+    sim_state->spring.spring_constant = 1.0f;
+    sim_state->spring.rest_length = 2.0f;
+
+    sim_state->spring1.other = &sim_state->test_particle;
+    sim_state->spring1.spring_constant = 1.0f;
+    sim_state->spring1.rest_length = 2.0f;
+
+    //Add forces to registry
+    sim_state->registry.add(&sim_state->test_particle, &sim_state->gravity);
+    sim_state->registry.add(&sim_state->test_particle, &sim_state->drag);
+    sim_state->registry.add(&sim_state->test_particle, &sim_state->test);
+    sim_state->registry.add(&sim_state->test_particle, &sim_state->spring);
+    sim_state->registry.add(&sim_state->test_particle1, &sim_state->spring1);
+
 }
 
 void update_physics_sim(float dt, Sim_State* sim_state)

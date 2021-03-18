@@ -1,9 +1,10 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <assert.h>
 #include <time.h>
-#include <SDL2/SDL.h>
+#include <SDL.h>
 
 int rand_int(int min, int max)
 {

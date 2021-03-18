@@ -1,8 +1,12 @@
+
+INCLUDE_PATH = "D:\thirdparty\SDL2-2.0.14\include"
+LIB_PATH = "D:\thirdparty\SDL2-2.0.14\lib\x64"
+
 main:
-	g++ -Wall -Wextra ./main.cpp -o 2dphy -lmingw32 -lSDL2main -lSDL2
+	clang -Wall -Wextra ./main.cpp -g -o 2dphy.exe -I$(INCLUDE_PATH) -L$(LIB_PATH) -Xlinker /subsystem:console -lshell32 -lSDL2main -lSDL2
 
 firework:
-	g++ -Wall -Wextra ./firework.cpp -o 2dphy -lmingw32 -lSDL2main -lSDL2
+	clang -Wall -Wextra ./firework.cpp -g -o 2dphy.exe -I$(INCLUDE_PATH) -L$(LIB_PATH) -Xlinker /subsystem:console -lshell32 -lSDL2main -lSDL2
 
 run:
 	.\2dphy.exe
