@@ -385,6 +385,228 @@ struct Particle_Force_Registry
 #include "force_gen.cpp"
 #endif
 
+struct Particle_Contact
+{
+    //Holds the particles that are involved in tge contact. The second of these
+    //can be NULL, for constacts with the scenery.
+    Particle* particle[2];
+    //Holds the normal restitution coefficient at the contact.
+    float restitution;
+    //Holds the direction of the contact in world coordinates for first object perspective
+    V2 contact_normal;
+    //Holds the depth of penetration at the contact
+    float penetration;
+};
+
+float calculate_separating_velocity(Particle_Contact* pc)
+{
+    V2 relative_velocity = pc->particle[0]->velocity;
+    if(pc->particle[1]) relative_velocity -= pc->particle[1]->velocity;
+    return v2_dot(relative_velocity, pc->contact_normal);
+}
+
+void contact_resolve_velocity(Particle_Contact* pc, float dt)
+{
+    //Find velocity in the direction of the contact
+    float separating_velocity = calculate_separating_velocity(pc);
+    
+    //Check whether it needs to be resolved
+    //The contact is either separating or stationary - there's no impulse required
+    if(separating_velocity > 0) return;
+    
+    //Calculate the new separating velocity
+    float new_sep_velocity = -separating_velocity * pc->restitution;
+    
+    V2 acc_caused_velocity = pc->particle[0]->acceleration;
+    if(pc->particle[1]) acc_caused_velocity -= pc->particle[1]->acceleration;
+    float acc_caused_sep_velocity = v2_dot(acc_caused_velocity, pc->contact_normal) * dt;
+    
+    //If we got a closing velocity due to acceleration build-up, remove it from the new separating velocity
+    if(acc_caused_sep_velocity < 0)
+    {
+        new_sep_velocity += pc->restitution * acc_caused_sep_velocity;
+        //Make sure we have't remove more than was
+        if(new_sep_velocity < 0) new_sep_velocity = 0;
+    }
+
+    float delta_velocity  = new_sep_velocity - separating_velocity;
+
+    //We apply the chage in velocity to each object in proportion to its inverse mass
+    float total_inverser_mass = pc->particle[0]->inverse_mass;
+    if(pc->particle[1]) total_inverser_mass += pc->particle[1]->inverse_mass;
+    
+    //If all particles have infinite mass, then impulses have no effect.
+    if(total_inverser_mass <= 0) return;
+    
+    //Calculate the impulse to apply
+    float impulse = delta_velocity / total_inverser_mass;
+
+    //Find tge amount of impulse per unit of inverse mass
+    V2 impulse_per_imass =  pc->contact_normal * impulse;
+
+    //Apply impulses: they are applied in the direction of the contact, adn are proportional to the inverse mass.
+    pc->particle[0]->velocity += (impulse_per_imass * pc->particle[0]->inverse_mass);
+    if(pc->particle[1])
+    {
+        //Particle 1 goes in the oposite direction.
+        pc->particle[1]->velocity += (impulse_per_imass * -pc->particle[1]->inverse_mass);
+    }
+}
+
+void contact_resolve_interpenetrarion(Particle_Contact* pc, float dt)
+{
+    (void)dt;
+    //If we dont have any penetration , skip this step
+    if(pc->penetration <= 0) return;
+    //The movement of each object is based on its inverse mass
+    float total_inverser_mass = pc->particle[0]->inverse_mass;
+    if(pc->particle[1]) total_inverser_mass += pc->particle[1]->inverse_mass;
+    //If all particles have infinite inverse mass, then we do nothing
+    if(total_inverser_mass == 0) return;
+    //Find the amount of penetration resolution per unit of inverse mass
+    V2 move_per_inverse_mass = pc->contact_normal * (-pc->penetration / total_inverser_mass);
+    //Apply the penetration resolution
+    pc->particle[0]->position += (move_per_inverse_mass * pc->particle[0]->inverse_mass);
+    if(pc->particle[1])
+    {
+        pc->particle[1]->position += (move_per_inverse_mass * pc->particle[1]->inverse_mass);
+    }
+}
+
+void contact_resolve(Particle_Contact* pc, float dt)
+{
+    contact_resolve_velocity(pc, dt);
+    contact_resolve_interpenetrarion(pc, dt);
+}
+
+struct Particle_Contact_Resolver
+{
+    //Holds the number of iteration allowed
+    uint32_t iterations;
+    //Perfornace traking value - actual number of iterations used
+    uint32_t iterations_used;
+    
+    //Resolves a set of particle contacts for both penetration and velocity
+    void resolve_contacts(Particle_Contact* contact_array, uint32_t num_contacts, float dt)
+    {
+        iterations_used = 0;
+        while(iterations_used < iterations)
+        {
+            //Find tge contact with the largest closing velocity
+            float max = 0;
+            uint32_t max_index = num_contacts;
+            for(uint32_t i = 0; i < num_contacts; ++i)
+            {
+                float sep_vel = calculate_separating_velocity(&contact_array[i]);
+                if(sep_vel < max)
+                {
+                    max = sep_vel;
+                    max_index = i;
+                }
+            }
+
+            contact_resolve(&contact_array[max_index], dt);
+            iterations_used++;
+        }    
+    }
+};
+
+//Links cinnect two particles together, generating a contact if they violate the
+//constrains fo their link. Its us as base class for cables and rods
+struct Particle_Link
+{
+    //Holds ther pair of particles that are connected by this link
+    Particle* particle[2];
+
+    //Return the current legth of the cable
+    float current_length()
+    {
+        V2 relative_pos = particle[0]->position - particle[1]->position;
+        return v2_length(relative_pos);
+    }
+
+    //Fills ther given contact structure with the contact neede to keep the link from
+    //violating its contrains. The methods return the number of contact that have been written.
+    virtual uint32_t fill_contact(Particle_Contact* contact, uint32_t limit) = 0;
+};
+
+//Cables link a pair if particles, generating a contact if they stray too far apart
+struct Particle_Cable : public Particle_Link
+{
+    //Holds the maximum length of the cable
+    float max_length;
+    //Holds the restitution (bounciness) of the cable
+    float restitution;
+
+    //Fills the given contact structure with the contact needed to keep the cable from overextending
+    virtual uint32_t fill_contact(Particle_Contact* contact, uint32_t limit)
+    {
+        (void)limit;
+        //Find the length of the cable
+        float length = current_length(); 
+        //Check wheter we are overextended
+        if(length < max_length) return 0;
+        
+        //Otherwise return the contact.
+        contact->particle[0] = particle[0];
+        contact->particle[1] = particle[1];
+
+        //Calculate the normals
+        V2 normal = particle[1]->position - particle[0]->position;
+        normal = v2_normailize(normal);
+        contact->contact_normal = normal;
+        contact->penetration = length-max_length;
+        contact->restitution = restitution;
+            
+        return 1;
+    }
+};
+
+//Rods link a pait of particles, generating a contact if they sary too far apart or too close
+struct Particle_Rod : public Particle_Link
+{
+    //Holds the lengh of the rod
+    float length;
+
+    //Fills the given structure with the contact neede to keep the rod extending or compressing
+    virtual uint32_t fill_contact(Particle_Contact* contact, uint32_t limit)
+    {
+        (void)limit;
+        //Find the length of the cable
+        float current_len= current_length(); 
+        //Chech wheter we overextended
+        if(current_len == length)
+        {
+            return 0;
+        }
+
+        //Otherwise return the contact
+        contact->particle[0] = particle[0];
+        contact->particle[1] = particle[1];
+
+        //Calculate the normal
+        V2 normal = particle[1]->position - particle[0]->position;
+        normal = v2_normailize(normal);
+
+        //The contact normal depends on whether we're extending or compressing
+        if(current_len > length)
+        {
+            contact->contact_normal = normal;
+            contact->penetration = current_len - length;
+        }
+        else
+        {
+            contact->contact_normal = normal * -1;
+            contact->penetration = length - current_len;
+        }
+
+        //Always use zero restitution (no bounciness)
+        contact->restitution = 0;
+
+        return 1;
+    }
+};
+
 #define WINDOW_TITLE "2dphy"
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
@@ -411,7 +633,6 @@ V2 world_to_screen(V2 pos)
 
 struct Sim_State
 {
-
     Particle test_particle;
     Particle test_particle1;
 
@@ -456,7 +677,6 @@ void init_physics_sim(Sim_State* sim_state)
     sim_state->registry.add(&sim_state->test_particle, &sim_state->test);
     sim_state->registry.add(&sim_state->test_particle, &sim_state->spring);
     sim_state->registry.add(&sim_state->test_particle1, &sim_state->spring1);
-
 }
 
 void update_physics_sim(float dt, Sim_State* sim_state)
