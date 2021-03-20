@@ -1,164 +1,4 @@
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <assert.h>
-#include <time.h>
-#include <SDL.h>
-
-int rand_int(int min, int max)
-{
-    int shift =  max - min;
-    int r = rand()%shift;
-    return min + r; 
-}
-
-float rand_float(float min, float max)
-{
-    float num = (float)rand()/(float)RAND_MAX;
-    num = num * (max - min) + min; 
-    return num;
-}
-
-struct V2 
-{
-    float x;
-    float y;
-
-    V2(): x(0), y(0) {}
-    V2(float x, float y): x(x), y(y) {}
-};
-
-V2 rand_v2(V2 min_velocity, V2 max_velocity)
-{
-    return V2(
-            rand_float(min_velocity.x, max_velocity.x),
-            rand_float(min_velocity.y, max_velocity.y));
-}
-
-inline
-V2 operator+(V2 v0, V2 v1)
-{
-    return V2(v0.x+v1.x, v0.y+v1.y);
-}
-
-inline
-void operator+=(V2& v0, V2 v1)
-{
-    v0 = v0 + v1;
-}
-
-inline
-V2 operator-(V2 v0, V2 v1)
-{
-    return V2(v0.x-v1.x, v0.y-v1.y);
-}
-
-inline
-void operator-=(V2& v0, V2 v1)
-{
-    v0 = v0 - v1;
-}
-
-inline 
-V2 operator*(V2 v, float s)
-{
-    return V2(v.x*s, v.y*s);
-}
-
-inline 
-V2 operator*(float s, V2 v)
-{
-    return V2(v.x*s, v.y*s);
-}
-
-inline
-V2 operator*(V2 v0, V2 v1)
-{
-    return V2(v0.x*v1.x, v0.y*v1.y);
-}
-
-inline
-void operator*=(V2& v, float s)
-{
-    v = v * s;
-}
-
-inline
-float v2_dot(V2 v0, V2 v1)
-{
-    return v0.x*v1.x + v0.y*v1.y;
-}
-
-inline
-V2 v2_perp(V2 v)
-{
-    return V2(-v.y, v.x);
-}
-
-inline
-float v2_length_sqrt(V2 v)
-{
-    return v2_dot(v, v);
-}
-
-inline
-float v2_length(V2 v)
-{
-    return sqrtf(v2_length_sqrt(v));
-}
-
-inline
-V2 v2_normailize(V2 v)
-{
-    float l = v2_length(v);
-    return V2(v.x/l, v.y/l);
-}
-
-inline V2 v2_gravity()
-{
-    return V2(0.0f, -10.0f);
-}
-
-struct Particle
-{
-    //Holds the linear position of the particle in world space
-    V2 position;
-    //Holds the linear velocity of the particle in world space
-    V2 velocity;
-    //Holds the acceleration of the particle
-    V2 acceleration;
-    
-    //Holds the accumulated force to be applied at the next simulation iteration only.
-    //This value is zeroed at each integration step
-    //TODO: Clear force_accum each integration step
-    V2 force_accum;
-
-    //Holds the amount of damping applied to linear motion.
-    //Damping is required to remove energy added through numerical instability in the integrator
-    float damping;
-
-    //Holds the inverser of the mass of the particle.
-    //Its more useful to hold the inverse mass because in real time simulations it is more useful
-    //to have objects with infinite mass (immovables) than zero mass
-    float inverse_mass;
-
-};
-
-void integrate_particle_position(Particle* particle, float dt)
-{
-    assert(dt > 0);
-    //Update linear position
-    particle->position += (particle->velocity * dt);
-    //Work out the acceleration from the force
-    V2 resulting_acc = particle->acceleration;
-    resulting_acc += (particle->force_accum * particle->inverse_mass);
-    //Update Linear velocity from acceleration
-    particle->velocity += (resulting_acc * dt);
-    particle->velocity *= powf(particle->damping, dt);
-
-    particle->force_accum = {};
-}
+#include "2dphy.cpp"
 
 //Fireworks
 struct Firework : public Particle
@@ -233,7 +73,7 @@ void firework_rule_paiload_create(Firework_Rule* rule, uint32_t number)
     rule->payload_count = number;
 }
 
-#define WINDOW_TITLE "2dphy"
+#define WINDOW_TITLE "2dphy_fireworks"
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 #define BACKGROUND_COLOR 0xFF3333AA 
@@ -245,12 +85,6 @@ void firework_rule_paiload_create(Firework_Rule* rule, uint32_t number)
 
 #define NUM_FIREWORKS_RULES 4
 #define NUM_FIREWORKS 1024
-
-inline
-float float_inverse(float num)
-{
-    return 1.0f / num;
-}
 
 V2 world_to_screen(V2 pos)
 {
